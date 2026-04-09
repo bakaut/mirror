@@ -1,0 +1,74 @@
+name: Mirror Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Source Docker image, for example nginx:latest
+        required: true
+        type: string
+      target_image:
+        description: Optional target image in GHCR, for example ghcr.io/bakaut/nginx:latest
+        required: false
+        type: string
+
+jobs:
+  mirror-image:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Prepare target image
+        id: prep
+        env:
+          SOURCE_IMAGE: ${{ inputs.image }}
+          TARGET_IMAGE: ${{ inputs.target_image }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          owner="$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          safe_name="$(printf '%s' "$SOURCE_IMAGE" | sed 's|.*/||' | sed 's/[^a-zA-Z0-9._-]/-/g')"
+          [ -n "$safe_name" ] || safe_name="docker-image"
+
+          if [ -n "$TARGET_IMAGE" ]; then
+            final_target="$TARGET_IMAGE"
+          else
+            final_target="ghcr.io/${owner}/${safe_name}:mirror"
+          fi
+
+          echo "target_image=$final_target" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull source image
+        run: docker pull "${{ inputs.image }}"
+
+      - name: Tag mirrored image
+        run: docker tag "${{ inputs.image }}" "${{ steps.prep.outputs.target_image }}"
+
+      - name: Push mirrored image
+        run: docker push "${{ steps.prep.outputs.target_image }}"
+
+      - name: Write summary
+        env:
+          SOURCE_IMAGE: ${{ inputs.image }}
+          TARGET_IMAGE: ${{ steps.prep.outputs.target_image }}
+        run: |
+          {
+            echo "## Docker image mirrored"
+            echo
+            echo "- Source: \`$SOURCE_IMAGE\`"
+            echo "- Target: \`$TARGET_IMAGE\`"
+            echo
+            echo "Pull command:"
+            echo "\`docker pull $TARGET_IMAGE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
